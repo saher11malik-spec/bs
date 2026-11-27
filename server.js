@@ -9,6 +9,10 @@ const app = express();
 app.use(express.json({ limit: maxUploadBytes }));
 function auth(req, res, next) { const token = (req.headers.authorization || '').replace(/^Bearer\s+/i, ''); if (!token) return res.status(401).json({ error: 'missing bearer token' }); if (token !== jwtSecret) return res.status(403).json({ error: 'invalid token' }); next(); }
 app.get('/health', (_, res) => res.json({ ok: true, service: 'bs-card-server', serverTime: new Date().toISOString() }));
+app.use((err, req, res, next) => {
+  if (err && err instanceof SyntaxError && err.status === 400 && err.type === 'entity.parse.failed') return res.status(400).json({ ok: false, error: 'invalid JSON request: ' + err.message });
+  return next(err);
+});
 app.get('/api/cards/health', auth, (_, res) => res.json({ ok: true, service: 'apk-card-service' }));
 app.post('/api/cards/analyze-files', auth, async (req, res) => {
   try { const friendsXml = await apkCardService.decodeFileIfNeeded(req.body.friendsXml, 'bs.xml'); const cardsXml = await apkCardService.decodeFileIfNeeded(req.body.cardsXml, 'my.xml'); return res.json({ ok: true, ...(await apkCardService.analyze({ friendsXml, cardsXml })) }); }
