@@ -18,15 +18,31 @@ function walk(node, fn, seen = new Set()) { if (!node || typeof node !== 'object
 function named(root, wanted) { let out = null; function visit(node) { if (!node || typeof node !== 'object' || out) return; if (wanted.includes(node['@_name'])) { out = node; return; } for (const [key, value] of Object.entries(node)) { if (wanted.includes(key)) { out = Array.isArray(value) ? value[0] : value; return; } for (const item of arr(value)) visit(item); } } visit(root); return out; }
 function field(node, names) { if (Array.isArray(node)) { for (const item of node) { const value = field(item, names); if (value !== undefined) return value; } return undefined; } if (!node || typeof node !== 'object') return undefined; for (const n of names) if (node['@_' + n] !== undefined) return node['@_' + n]; for (const [key, value] of Object.entries(node)) { if (names.includes(key) && typeof value !== 'object') return value; for (const child of arr(value)) if (child && names.includes(child['@_name'])) return child['@_value'] ?? child['@_v'] ?? child['@_count']; } return undefined; }
 function dataValue(root, names) { let out; walk(root, node => { if (out !== undefined) return; if (names.includes(node['@_name'])) out = node['@_value'] ?? node['@_v'] ?? node['@_version']; }); return out; }
+function normalizeDecoded(raw, contentType = '') {
+  let data = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
+  if (data.length >= 2 && data[0] === 0x1f && data[1] === 0x8b) data = zlib.gunzipSync(data);
+  let text;
+  if (data.length >= 2 && data[0] === 0xff && data[1] === 0xfe) text = data.toString('utf16le');
+  else if (data.length >= 2 && data[0] === 0xfe && data[1] === 0xff) { const swapped = Buffer.alloc(data.length - 2); for (let i = 2; i + 1 < data.length; i += 2) { swapped[i - 2] = data[i + 1]; swapped[i - 1] = data[i]; } text = swapped.toString('utf16le'); }
+  else text = data.toString('utf8');
+  text = text.replace(/^\uFEFF/, '').trim();
+  if (/^\s*\{/.test(text)) {
+    try { const obj = JSON.parse(text); const candidate = obj.xml ?? obj.decoded ?? obj.data ?? obj.content; if (typeof candidate === 'string') text = candidate; } catch {}
+  }
+  if (!/^\s*</.test(text) && /^[A-Za-z0-9+/=\r\n]+$/.test(text) && text.replace(/\s/g, '').length % 4 === 0) {
+    try { const decoded = Buffer.from(text.replace(/\s/g, ''), 'base64'); if (decoded.length) return normalizeDecoded(decoded, contentType); } catch {}
+  }
+  return text;
+}
 async function decodeFileIfNeeded(content, filename = 'save.xml') {
   const text = str(content);
   if (/^\s*</.test(text)) return text;
   if (!DECODE_ENDPOINT) throw new Error(`encrypted ${filename} requires DECODE_ENDPOINT`);
   const response = await fetch(DECODE_ENDPOINT, { method: 'POST', headers: { 'content-type': 'application/octet-stream', 'x-filename': filename }, body: Buffer.from(text, 'binary') });
   const raw = Buffer.from(await response.arrayBuffer());
-  const decoded = raw.toString('utf8');
+  const decoded = normalizeDecoded(raw, response.headers.get('content-type') || '');
   if (!response.ok) throw new Error(`decode ${filename} failed HTTP ${response.status}: ${decoded.slice(0, 300)}`);
-  if (!/^\s*</.test(decoded)) throw new Error(`decode ${filename} returned non-XML data`);
+  if (!/^\s*</.test(decoded)) { const magic = raw.subarray(0, 16).toString('hex'); throw new Error(`decode ${filename} returned non-XML data (content-type=${response.headers.get('content-type') || 'unknown'}, bytes=${magic})`); }
   return decoded;
 }
 
